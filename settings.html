@@ -6,10 +6,14 @@
         </div>
         <div class="inline-drawer-content">
             <label for="telegram_bot_token">Bot Token</label>
-            <input id="telegram_bot_token" type="text" value="{{token}}" />
+            <div class="flex-container flexnowrap">
+                <input id="telegram_bot_token" type="text" class="text_pole" placeholder="Example: 0123456789:ABCDEFGH-abcd1234abcd1234abfcd12345" value="{{token}}" />
+            </div>
             <label for="telegram_chat_id">Chat ID</label>
-            <input id="telegram_chat_id" type="text" value="{{chatId}}" />
-            <button id="save_telegram_settings">Save</button>
+            <div class="flex-container flexnowrap">
+            <input id="telegram_chat_id" type="text" class="text_pole" placeholder="Example: 01234567" value="{{chatId}}" />
+            </div>
+            <button id="save_telegram_settings" class="menu_button">Save</button>
         </div>
     </div>
 </div>
