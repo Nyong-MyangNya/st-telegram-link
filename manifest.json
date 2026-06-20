@@ -1,0 +1,11 @@
+{
+    "id": "st-telegram-link",
+    "name": "Telegram Link",
+    "display_name": "Telegram Link",
+    "version": "1.0.0",
+    "description": "Telegram Link",
+    "author": "LocalDev",
+    "js": "index.js",
+    "css": "",
+    "requires": []
+}
