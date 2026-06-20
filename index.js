@@ -2,7 +2,7 @@ import { chat } from '../../../../script.js';
 import { SlashCommandParser } from '../../../../scripts/slash-commands/SlashCommandParser.js';
 
 // Get extension settings and helper functions from SillyTavern context
-const { extensionSettings, saveSettingsDebounced, renderExtensionTemplateAsync } = SillyTavern.getContext();
+const { extensionSettings, saveSettingsDebounced, renderExtensionTemplateAsync, eventSource, event_types } = SillyTavern.getContext();
 const MODULE_NAME = 'st-telegram-link';
 
 // Default settings for the Telegram link extension
@@ -42,81 +42,6 @@ jQuery(async () => {
         alert('Settings saved successfully');
     });
 
-    let lastUpdateId = 0;
-    let lastChatIndex = 0;
-    const messageQueue = [];
-    let isProcessingQueue = false;
-    let isInitialized = false;
-    setTimeout(() => { isInitialized = true; }, 3000);
-
-    // Process queued Telegram send/edit jobs sequentially
-    async function processQueue() {
-        if (isProcessingQueue || messageQueue.length === 0 || !settings.token || !settings.chatId) return;
-        isProcessingQueue = true;
-        while (messageQueue.length > 0) {
-            const job = messageQueue.shift();
-            const msg = job.msg;
-            const payloadText = `[${msg.name || 'System'}]\n${msg.mes}`;
-            try {
-                if (job.type === 'SEND') {
-                    const response = await fetch(`https://api.telegram.org/bot${settings.token}/sendMessage`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ chat_id: settings.chatId, text: payloadText })
-                    });
-                    const data = await response.json();
-                    if (data.ok) {
-                        msg.tgMsgId = data.result.message_id;
-                        msg.tgLastAttemptedText = msg.mes;
-                        msg.tgLastEditTime = Date.now();
-                    }
-                } else if (job.type === 'EDIT') {
-                    job.msg.isQueuedForEdit = false;
-                    if (!isInitialized || !msg.tgMsgId) continue;
-                    const response = await fetch(`https://api.telegram.org/bot${settings.token}/editMessageText`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ chat_id: settings.chatId, message_id: msg.tgMsgId, text: payloadText })
-                    });
-                    const data = await response.json();
-                    if (data.ok || (data.description && data.description.includes("message is not modified"))) {
-                        msg.tgLastAttemptedText = msg.mes;
-                    }
-                }
-            } catch (e) { console.error(e); }
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-        isProcessingQueue = false;
-    }
-
-    // Check for new chat messages and queue them for sending or editing
-    function checkNewChatMessages() {
-        if (!chat || chat.length === 0) return;
-        if (lastChatIndex === 0) { lastChatIndex = chat.length; return; }
-        while (lastChatIndex < chat.length) {
-            const msg = chat[lastChatIndex];
-            if (msg && msg.mes && !msg.telegramSent && !msg.is_user) {
-                msg.telegramSent = true;
-                msg.tgLastAttemptedText = msg.mes;
-                messageQueue.push({ type: 'SEND', msg });
-            }
-            lastChatIndex++;
-        }
-        const lastMsg = chat[chat.length - 1];
-        if (lastMsg && !lastMsg.is_user && lastMsg.tgMsgId) {
-            if (lastMsg.mes !== lastMsg.tgLastAttemptedText && !lastMsg.isQueuedForEdit) {
-                const now = Date.now();
-                if (!lastMsg.tgLastEditTime || (now - lastMsg.tgLastEditTime > 2000)) {
-                    lastMsg.isQueuedForEdit = true;
-                    lastMsg.tgLastEditTime = now;
-                    lastMsg.tgLastAttemptedText = lastMsg.mes;
-                    messageQueue.push({ type: 'EDIT', msg: lastMsg });
-                }
-            }
-        }
-        processQueue();
-    }
-
     // Register supported SillyTavern commands with Telegram bot commands
     async function registerTelegramCommands() {
         if (!settings.token) return;
@@ -155,6 +80,13 @@ jQuery(async () => {
                 cmdList.push({ command: cleanCommand, description: finalDescription || "Command" });
             }
         }
+
+        // 
+        cmdList.push({ 
+            command: 'history', 
+            description: 'Show recent conversation history (e.g. /history 5)' 
+        });
+
         console.log(cmdList);
         await fetch(`https://api.telegram.org/bot${settings.token}/setMyCommands`, {
             method: 'POST',
@@ -162,30 +94,211 @@ jQuery(async () => {
             body: JSON.stringify({ commands: cmdList.slice(0, 100) })
         });
     }
+    registerTelegramCommands();
 
-    // Poll Telegram getUpdates endpoint for incoming messages
-    async function pollTelegramMessages() {
-        if (!settings.token) return;
+    //
+    let currentTelegramMessageId = null;    // Telegram message ID that was created
+    let isSendingInitialMessage = false;   // Lock while creating the initial message
+    let lastTelegramUpdateTime = 0;         // Throttle timing check
+    let lastTelegramSentText = '';          // Cache to prevent duplicate sends (400 error)
+    const TELEGRAM_EDIT_THROTTLE = 2000;    // Telegram edit throttle (2 seconds)
+
+    // Called each time a token is received during streaming
+    eventSource.on(event_types.STREAM_TOKEN_RECEIVED, async () => {
+        const currentSettings = getSettings();
+        if (!currentSettings.token || !currentSettings.chatId) return;
+
+        const message = chat[chat.length - 1];
+        if (!message || message.is_user) return;
+
+        const now = Date.now();
+        // Convert message.message to SillyTavern standard message.mes
+        const fullText = `${message.name}: ${message.mes || '...'}`;
+
+        // 1. Create initial Telegram message
+        if (!currentTelegramMessageId && !isSendingInitialMessage) {
+            isSendingInitialMessage = true;
+            try {
+                const response = await fetch(`https://api.telegram.org/bot${currentSettings.token}/sendMessage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: currentSettings.chatId, text: fullText })
+                });
+                const data = await response.json();
+                if (data.ok) {
+                    currentTelegramMessageId = data.result.message_id;
+                    lastTelegramSentText = fullText;
+                    lastTelegramUpdateTime = Date.now();
+                }
+            } catch (error) {
+                console.error('[Telegram Link] Failed to send initial message:', error);
+            } finally {
+                isSendingInitialMessage = false;
+            }
+            return;
+        }
+
+        // 2. After throttle time passed, update Telegram only when actual content changed (prevent 400 errors)
+        if (currentTelegramMessageId && (now - lastTelegramUpdateTime > TELEGRAM_EDIT_THROTTLE)) {
+            if (fullText === lastTelegramSentText) return; 
+
+            lastTelegramUpdateTime = now;
+            lastTelegramSentText = fullText;
+            try {
+                await fetch(`https://api.telegram.org/bot${currentSettings.token}/editMessageText`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: currentSettings.chatId,
+                        message_id: currentTelegramMessageId,
+                        text: fullText
+                    })
+                });
+            } catch (error) {
+                console.error('[Telegram Link] Streaming update failed:', error);
+            }
+        }
+    });
+
+    // 1-2. Called when streaming is fully finished (final sentence sync)
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async () => {
+        const currentSettings = getSettings();
+        if (!currentSettings.token || !currentSettings.chatId) return;
+
+        const message = chat[chat.length - 1];
+        if (!message || message.is_user) return;
+
+        const fullText = `${message.name}: ${message.mes}`;
+
+        let attempts = 0;
+        while (!currentTelegramMessageId && isSendingInitialMessage && attempts < 30) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            attempts++;
+        }
+
         try {
-            const response = await fetch(`https://api.telegram.org/bot${settings.token}/getUpdates?offset=${lastUpdateId + 1}`);
+            if (currentTelegramMessageId) {
+                // Update Telegram only when the final content differs to prevent 400 errors
+                if (fullText !== lastTelegramSentText) {
+                    await fetch(`https://api.telegram.org/bot${currentSettings.token}/editMessageText`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            chat_id: currentSettings.chatId,
+                            message_id: currentTelegramMessageId,
+                            text: fullText
+                        })
+                    });
+                }
+            } else {
+                await fetch(`https://api.telegram.org/bot${currentSettings.token}/sendMessage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: currentSettings.chatId, text: fullText })
+                });
+            }
+        } catch (error) {
+            console.error('[Telegram Link] Final message sync failed:', error);
+        } finally {
+            currentTelegramMessageId = null;
+            isSendingInitialMessage = false;
+            lastTelegramSentText = '';
+        }
+    });
+
+
+    // command handler
+    const commandHandlers = {
+        '/history': async (args, chatId, token) => {
+            const count = args[0] ? parseInt(args[0], 10) : 5;
+            const recentChats = chat.slice(-count);
+            let historyText = `📜 Recent conversation history (${recentChats.length} items):\n\n`;
+
+            if (recentChats.length === 0) {
+                historyText += "No conversation history available.";
+            } else {
+                recentChats.forEach(m => {
+                    const cleanText = (m.mes || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>?/gm, '');
+                    historyText += `[${m.name}]: ${cleanText}\n\n`;
+                });
+            }
+            
+            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, text: historyText.substring(0, 4000) })
+            });
+        },
+        // add new command here
+    };    
+
+    // 2. Detect Telegram messages in real time and input them into SillyTavern (Inbound - Long Polling)
+    let lastUpdateId = null;
+    let isPolling = false;
+
+    async function pollTelegramUpdates() {
+        const currentSettings = getSettings();
+        if (!currentSettings.token || !currentSettings.chatId) {
+            setTimeout(pollTelegramUpdates, 2000);
+            return;
+        }
+
+        if (isPolling) return;
+        isPolling = true;
+
+        try {
+            if (lastUpdateId === null) {
+                const response = await fetch(`https://api.telegram.org/bot${currentSettings.token}/getUpdates?offset=-1&timeout=0`);
+                const data = await response.json();
+                lastUpdateId = (data.ok && data.result && data.result.length > 0) ? data.result[0].update_id : 0;
+                isPolling = false;
+                setTimeout(pollTelegramUpdates, 1000);
+                return;
+            }
+
+            const response = await fetch(`https://api.telegram.org/bot${currentSettings.token}/getUpdates?offset=${lastUpdateId + 1}&timeout=30`);
             const data = await response.json();
-            if (data.ok && data.result.length > 0) {
+
+            if (data.ok && data.result) {
                 for (const update of data.result) {
                     lastUpdateId = update.update_id;
-                    let text = update.message?.text;
-                    if (!text) continue;
-                    const parts = text.split(' ');
-                    if (parts[0].startsWith('/')) {
-                        text = parts[0].replace(/_/g, '-') + (parts.length > 1 ? ' ' + parts.slice(1).join(' ') : '');
+                    const message = update.message;
+
+                    if (message && message.chat && String(message.chat.id) === String(currentSettings.chatId) && message.text) {
+                        const text = message.text.trim();
+
+                        // 1. Check if this is a command (starts with /)
+                        if (text.startsWith('/')) {
+                            const [rawCmd, ...args] = text.split(/\s+/);
+                            const cmd = rawCmd.split('@')[0].toLowerCase(); // handle bot tag
+
+                            if (commandHandlers[cmd]) {
+                                console.log(`[Telegram Link] Executing command: ${cmd}`);
+                                await commandHandlers[cmd](args, currentSettings.chatId, currentSettings.token);
+                                continue; // skip to the next update after command execution
+                            }
+                        }
+
+                        // 2. If not a command, handle as regular chat
+                        const $textarea = $('#send_textarea');
+                        const $sendBtn = $('#send_but'); 
+
+                        if ($textarea.length > 0 && $sendBtn.length > 0) {
+                            $textarea.val(text);
+                            $textarea[0].dispatchEvent(new Event('input', { bubbles: true }));
+                            setTimeout(() => { $sendBtn.trigger('click'); }, 100);
+                        }
                     }
-                    const textarea = document.getElementById('send_textarea');
-                    if (textarea) { textarea.value = text; document.getElementById('send_but')?.click(); }
                 }
             }
-        } catch (e) { console.error(e); }
+        } catch (error) {
+            console.error('[Telegram Link] Polling error:', error);
+        } finally {
+            isPolling = false;
+            setTimeout(pollTelegramUpdates, 1000);
+        }
     }
 
-    setTimeout(registerTelegramCommands, 3000);
-    setInterval(pollTelegramMessages, 2000);
-    setInterval(checkNewChatMessages, 1000);
+    pollTelegramUpdates();
+
 });
