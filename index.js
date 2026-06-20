@@ -26,7 +26,7 @@ function getSettings() {
 
 jQuery(async () => {
     const settings = getSettings();
-    
+
     // Render the extension settings UI
     const settingsHtml = await renderExtensionTemplateAsync('third-party/st-telegram-link', 'settings', {
         token: settings.token,
@@ -72,7 +72,7 @@ jQuery(async () => {
                     }
                 } else if (job.type === 'EDIT') {
                     job.msg.isQueuedForEdit = false;
-                    if (!isInitialized || !msg.tgMsgId) continue; 
+                    if (!isInitialized || !msg.tgMsgId) continue;
                     const response = await fetch(`https://api.telegram.org/bot${settings.token}/editMessageText`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -126,6 +126,9 @@ jQuery(async () => {
             /^send/,
             /^continue$/,
 
+            /char$/,
+            /chat/,
+
             /^sys$/,
             /^comment$/,
             /^persona/,
@@ -135,11 +138,24 @@ jQuery(async () => {
         const cmdList = [];
         const entries = commandsMap instanceof Map ? Array.from(commandsMap.entries()) : Object.entries(commandsMap);
         for (const [key, value] of entries) {
-            let cleanCommand = key.toLowerCase().replace(/[^a-z0-9_]/g, '');
+            let cleanCommand = key.toLowerCase().replace(/-/g, '_');
+
             if (FILTERS.some(regex => regex.test(cleanCommand))) {
-                cmdList.push({ command: cleanCommand, description: (value.help || "No description").substring(0, 256) });
+
+                let description = "";
+                if (value.helpString) {
+                    description = value.helpString.replace(/<[^>]*>/g, '').trim();
+                } else if (value.help) {
+                    description = value.help;
+                } else {
+                    description = "";
+                }
+                const finalDescription = description.substring(0, 256).split('\n')[0].trim();
+
+                cmdList.push({ command: cleanCommand, description: finalDescription || "Command" });
             }
         }
+        console.log(cmdList);
         await fetch(`https://api.telegram.org/bot${settings.token}/setMyCommands`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -156,8 +172,12 @@ jQuery(async () => {
             if (data.ok && data.result.length > 0) {
                 for (const update of data.result) {
                     lastUpdateId = update.update_id;
-                    const text = update.message?.text;
+                    let text = update.message?.text;
                     if (!text) continue;
+                    const parts = text.split(' ');
+                    if (parts[0].startsWith('/')) {
+                        text = parts[0].replace(/_/g, '-') + (parts.length > 1 ? ' ' + parts.slice(1).join(' ') : '');
+                    }
                     const textarea = document.getElementById('send_textarea');
                     if (textarea) { textarea.value = text; document.getElementById('send_but')?.click(); }
                 }
