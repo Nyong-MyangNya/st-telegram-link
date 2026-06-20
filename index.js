@@ -143,17 +143,10 @@ jQuery(async () => {
         startTyping(currentSettings.token, currentSettings.chatId);
     });
 
-    // 2. First streaming token received (thinking finished, response output begins)
-    eventSource.on(event_types.STREAM_TOKEN_RECEIVED, () => {
-        // Stop typing action because the response is now visible to the user
-        stopTyping();
-    });
-
-    // 3. Generation stopped or ended (exception handling and completion)
+    // Generation stopped or ended (exception handling and completion)
     eventSource.on(event_types.GENERATION_STOPPED, () => {
         stopTyping();
     });
-
     eventSource.on(event_types.GENERATION_ENDED, () => {
         stopTyping();
     });    
@@ -332,7 +325,7 @@ jQuery(async () => {
                     const message = update.message;
 
                     if (message && message.chat && String(message.chat.id) === String(currentSettings.chatId) && message.text) {
-                        const text = message.text.trim();
+                        let text = message.text.trim();
 
                         // 1. Check if this is a command (starts with /)
                         if (text.startsWith('/')) {
@@ -349,6 +342,12 @@ jQuery(async () => {
                         // 2. If not a command, handle as regular chat
                         const $textarea = $('#send_textarea');
                         const $sendBtn = $('#send_but'); 
+
+                        // Replace _ with - for SillyTavern commands
+                        const parts = text.split(' ');
+                        if (parts[0].startsWith('/')) {
+                            text = parts[0].replace(/_/g, '-') + (parts.length > 1 ? ' ' + parts.slice(1).join(' ') : '');
+                        }
 
                         if ($textarea.length > 0 && $sendBtn.length > 0) {
                             $textarea.val(text);
@@ -367,5 +366,6 @@ jQuery(async () => {
     }
 
     pollTelegramUpdates();
+    
 
 });
