@@ -86,6 +86,10 @@ jQuery(async () => {
             command: 'history', 
             description: 'Show recent conversation history (e.g. /history 5)' 
         });
+        cmdList.push({ 
+            command: 'cancel', 
+            description: 'Cancel' 
+        });
 
         console.log(cmdList);
         await fetch(`https://api.telegram.org/bot${settings.token}/setMyCommands`, {
@@ -95,6 +99,65 @@ jQuery(async () => {
         });
     }
     registerTelegramCommands();
+
+    // Telegram typing action helper
+    async function sendTypingAction(token, chatId) {
+        try {
+            await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, action: 'typing' })
+            });
+        } catch (err) {
+            console.error('[Telegram Link] Typing action failed:', err);
+        }
+    }
+    let typingInterval = null;
+
+    // Start and refresh typing action
+    function startTyping(token, chatId) {
+        if (typingInterval) return; // Prevent duplicate execution if already running
+        
+        // Execute once immediately
+        sendTypingAction(token, chatId);
+        
+        // Refresh every 4 seconds considering Telegram action duration (5 seconds)
+        typingInterval = setInterval(() => {
+            sendTypingAction(token, chatId);
+        }, 4000);
+    }
+
+    // Stop typing action
+    function stopTyping() {
+        if (typingInterval) {
+            clearInterval(typingInterval);
+            typingInterval = null;
+        }
+    }
+
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, () => {
+        const currentSettings = getSettings();
+        if (!currentSettings.token || !currentSettings.chatId) return;
+        
+        // Start typing action when AI begins thinking
+        startTyping(currentSettings.token, currentSettings.chatId);
+    });
+
+    // 2. First streaming token received (thinking finished, response output begins)
+    eventSource.on(event_types.STREAM_TOKEN_RECEIVED, () => {
+        // Stop typing action because the response is now visible to the user
+        stopTyping();
+    });
+
+    // 3. Generation stopped or ended (exception handling and completion)
+    eventSource.on(event_types.GENERATION_STOPPED, () => {
+        stopTyping();
+    });
+
+    eventSource.on(event_types.GENERATION_ENDED, () => {
+        stopTyping();
+    });    
+
 
     //
     let currentTelegramMessageId = null;    // Telegram message ID that was created
@@ -228,6 +291,10 @@ jQuery(async () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ chat_id: chatId, text: historyText.substring(0, 4000) })
             });
+        },
+        '/cancel': async (args, chatId, token) => {
+            const $stopBtn = $('#mes_stop'); 
+            setTimeout(() => { $stopBtn.trigger('click'); }, 100);
         },
         // add new command here
     };    
