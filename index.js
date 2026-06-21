@@ -1,4 +1,4 @@
-import { chat } from '../../../../script.js';
+﻿import { chat } from '../../../../script.js';
 import { SlashCommandParser } from '../../../../scripts/slash-commands/SlashCommandParser.js';
 
 // Get extension settings and helper functions from SillyTavern context
@@ -24,8 +24,24 @@ function getSettings() {
     return extensionSettings[MODULE_NAME];
 }
 
+async function loadCommandHandlers() {
+    try {
+        const module = await import('./commands.js');
+        if (typeof module.createCommandHandlers === 'function') {
+            return module.createCommandHandlers();
+        }
+        if (module.commandHandlers) {
+            return module.commandHandlers;
+        }
+    } catch (error) {
+        console.warn('[Telegram Link] External command handlers not loaded.', error);
+    }
+
+    return {};
+}
 jQuery(async () => {
     const settings = getSettings();
+    const commandHandlers = await loadCommandHandlers();
 
     // Render the extension settings UI
     const settingsHtml = await renderExtensionTemplateAsync('third-party/st-telegram-link', 'settings', {
@@ -51,12 +67,12 @@ jQuery(async () => {
             /^send/,
             /^continue$/,
 
-            /char$/,
-            /chat/,
+            // /char$/,
+            // /chat/,
 
             /^sys$/,
-            /^comment$/,
-            /^persona/,
+            // /^comment$/,
+            // /^persona/,
 
             /^help$/
         ];
@@ -262,36 +278,6 @@ jQuery(async () => {
         }
     });
 
-
-    // command handler
-    const commandHandlers = {
-        '/history': async (args, chatId, token) => {
-            const count = args[0] ? parseInt(args[0], 10) : 5;
-            const recentChats = chat.slice(-count);
-            let historyText = `📜 Recent conversation history (${recentChats.length} items):\n\n`;
-
-            if (recentChats.length === 0) {
-                historyText += "No conversation history available.";
-            } else {
-                recentChats.forEach(m => {
-                    const cleanText = (m.mes || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>?/gm, '');
-                    historyText += `[${m.name}]: ${cleanText}\n\n`;
-                });
-            }
-            
-            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chat_id: chatId, text: historyText.substring(0, 4000) })
-            });
-        },
-        '/cancel': async (args, chatId, token) => {
-            const $stopBtn = $('#mes_stop'); 
-            setTimeout(() => { $stopBtn.trigger('click'); }, 100);
-        },
-        // add new command here
-    };    
-
     // 2. Detect Telegram messages in real time and input them into SillyTavern (Inbound - Long Polling)
     let lastUpdateId = null;
     let isPolling = false;
@@ -369,3 +355,4 @@ jQuery(async () => {
     
 
 });
+
