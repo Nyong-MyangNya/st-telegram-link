@@ -63,8 +63,38 @@ jQuery(async () => {
         if (!settings.token) return;
         const commandsMap = SlashCommandParser.commands;
         if (!commandsMap) return;
+        const cmdList = [];
+
+        // My commands
+        cmdList.push({ 
+            command: 'next', 
+            description: 'Next message' 
+        });
+        cmdList.push({ 
+            command: 'sendas', 
+            description: 'sends a message as a specific character (e.g. /sendas name: text)' 
+        });
+        cmdList.push({ 
+            command: 'cancel', 
+            description: 'Cancel' 
+        });
+        cmdList.push({ 
+            command: 'history', 
+            description: 'Show recent conversation history (e.g. /history 5)' 
+        });
+        cmdList.push({ 
+            command: 'char_list', 
+            description: 'List all loaded characters' 
+        });
+        cmdList.push({ 
+            command: 'char_change', 
+            description: 'Switch to a character by name or index' 
+        });
+
+
+        // Register SillyTavern commands
         const FILTERS = [
-            /^send/,
+            /^send$/,
             /^continue$/,
 
             // /char$/,
@@ -76,7 +106,6 @@ jQuery(async () => {
 
             /^help$/
         ];
-        const cmdList = [];
         const entries = commandsMap instanceof Map ? Array.from(commandsMap.entries()) : Object.entries(commandsMap);
         for (const [key, value] of entries) {
             let cleanCommand = key.toLowerCase().replace(/-/g, '_');
@@ -96,24 +125,6 @@ jQuery(async () => {
                 cmdList.push({ command: cleanCommand, description: finalDescription || "Command" });
             }
         }
-
-        // 
-        cmdList.push({ 
-            command: 'history', 
-            description: 'Show recent conversation history (e.g. /history 5)' 
-        });
-        cmdList.push({ 
-            command: 'char_list', 
-            description: 'List all loaded characters' 
-        });
-        cmdList.push({ 
-            command: 'char_change', 
-            description: 'Switch to a character by name or index' 
-        });
-        cmdList.push({ 
-            command: 'cancel', 
-            description: 'Cancel' 
-        });
 
         console.log(cmdList);
         await fetch(`https://api.telegram.org/bot${settings.token}/setMyCommands`, {
@@ -317,6 +328,7 @@ jQuery(async () => {
                 for (const update of data.result) {
                     lastUpdateId = update.update_id;
                     const message = update.message;
+                    const callbackQuery = update.callback_query;
 
                     if (message && message.chat && String(message.chat.id) === String(currentSettings.chatId) && message.text) {
                         let text = message.text.trim();
@@ -325,17 +337,18 @@ jQuery(async () => {
                         if (text.startsWith('/')) {
                             const [rawCmd, ...args] = text.split(/\s+/);
                             const cmd = rawCmd.split('@')[0].toLowerCase(); // handle bot tag
+                            console.log(`rawCmd:${rawCmd}`);
 
                             if (commandHandlers[cmd]) {
                                 console.log(`[Telegram Link] Executing command: ${cmd}`);
                                 await commandHandlers[cmd](args, currentSettings.chatId, currentSettings.token, text);
-                                continue; // skip to the next update after command execution
+                                continue;
                             }
                         }
 
                         // 2. If not a command, handle as regular chat
                         const $textarea = $('#send_textarea');
-                        const $sendBtn = $('#send_but'); 
+                        const $sendBtn = $('#send_but');
 
                         // Replace _ with - for SillyTavern commands
                         const parts = text.split(' ');
@@ -347,6 +360,22 @@ jQuery(async () => {
                             $textarea.val(text);
                             $textarea[0].dispatchEvent(new Event('input', { bubbles: true }));
                             setTimeout(() => { $sendBtn.trigger('click'); }, 100);
+                        }
+                    } else if (callbackQuery && callbackQuery.from && String(callbackQuery.from.id) === String(currentSettings.chatId)) {
+                        const data = callbackQuery.data;
+                        console.log(`callbackQuery.data=${data}`);
+                        if (typeof data === 'string') {
+                            const [cmd, ...args] = data.split(':');
+                            if (commandHandlers[cmd]) {
+                                console.log(`[Telegram Link] Executing command: ${cmd} from callback query`);
+                                await commandHandlers[cmd](args, currentSettings.chatId, currentSettings.token);
+                                // Acknowledge the callback to remove the loading state on the button
+                                await fetch(`https://api.telegram.org/bot${currentSettings.token}/answerCallbackQuery`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ callback_query_id: callbackQuery.id })
+                                });
+                            }
                         }
                     }
                 }
