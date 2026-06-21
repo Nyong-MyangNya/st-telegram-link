@@ -320,7 +320,7 @@ jQuery(async () => {
 
                             if (commandHandlers[cmd]) {
                                 console.log(`[Telegram Link] Executing command: ${cmd}`);
-                                await commandHandlers[cmd](args, currentSettings.chatId, currentSettings.token);
+                                await commandHandlers[cmd](args, currentSettings.chatId, currentSettings.token, text);
                                 continue; // skip to the next update after command execution
                             }
                         }

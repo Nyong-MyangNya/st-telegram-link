@@ -6,6 +6,19 @@ function sanitizeText(text = '') {
         .replace(/<[^>]*>?/gm, '');
 }
 
+function sendTextToInput(text = '') {
+    const $textarea = $('#send_textarea');
+    const $sendBtn = $('#send_but');
+
+    if ($textarea.length > 0 && $sendBtn.length > 0) {
+        $textarea.val(text);
+        $textarea[0].dispatchEvent(new Event('input', { bubbles: true }));
+        setTimeout(() => {
+            $sendBtn.trigger('click');
+        }, 100);
+    }
+}
+
 export function createCommandHandlers() {
     return {
         '/history': async (args, chatId, token) => {
@@ -30,6 +43,28 @@ export function createCommandHandlers() {
                     text: historyText.substring(0, 4000)
                 })
             });
+        },
+        '/sendas': async (args, chatId, token, rawText) => {
+            const rawArgs = args.filter(Boolean);
+            if (rawArgs.length === 0) return;
+
+            const rawCommandText = (rawText || `/sendas ${rawArgs.join(' ')}`).trim();
+            const match = rawCommandText.match(/^\/sendas\s+(.+?)\s*:\s*(.*)$/);
+
+            if (match) {
+                const name = match[1].trim();
+                const rest = match[2].trim();
+
+                if (name) {
+                    const escapedName = name.replaceAll('"', '\\"');
+                    const commandText = `/sendas name="${escapedName}"${rest ? ` ${rest}` : ''}`;
+                    sendTextToInput(commandText);
+                    return;
+                }
+            }
+
+            const commandText = `/sendas ${rawArgs.join(' ')}`.trim();
+            sendTextToInput(commandText);
         },
         '/cancel': async () => {
             const $stopBtn = $('#mes_stop');
