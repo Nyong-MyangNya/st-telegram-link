@@ -103,6 +103,14 @@ jQuery(async () => {
             description: 'Show recent conversation history (e.g. /history 5)' 
         });
         cmdList.push({ 
+            command: 'char_list', 
+            description: 'List all loaded characters' 
+        });
+        cmdList.push({ 
+            command: 'char_change', 
+            description: 'Switch to a character by name or index' 
+        });
+        cmdList.push({ 
             command: 'cancel', 
             description: 'Cancel' 
         });
