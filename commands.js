@@ -1,4 +1,4 @@
-import { chat, characters, selectCharacterById } from '../../../../script.js';
+import { Generate, chat, characters, selectCharacterById } from '../../../../script.js';
 
 function sanitizeText(text = '') {
     return text
@@ -141,6 +141,50 @@ export function createCommandHandlers() {
                     text: historyText.substring(0, 4000)
                 })
             });
+        },
+        '/impersonate': async (args, chatId, token, rawText) => {
+            const { eventSource, event_types, generateRaw, name1, name2 } = SillyTavern.getContext();
+
+            const firstSpaceIndex = rawText.indexOf(" ");
+            // 공백 뒤의 문자열을 가져온 뒤, 양끝 공백을 제거(.trim())
+            const rawDialogue = firstSpaceIndex !== -1 ? rawText.slice(firstSpaceIndex + 1).trim() : "";            
+
+            // impersonate실행후 중간에 프롬프트 바꾸기 (GENERATE_AFTER_DATA) // TODO: 생성된 지훈의 메세지가 텔레그램에 안보임
+            const eventPromise = new Promise((resolve) => {
+                const onAfterData = (generate_data, dryRun) => {
+                    cleanup();
+                    
+                    let newPrompt = generate_data.prompt;
+                    if (rawDialogue) {
+                        const regex = new RegExp(`(${name1}|${name2}):$`);
+                        newPrompt = newPrompt.replace(regex, '');
+                        newPrompt += `Rewrite this dialogue of ${name1} into a novel sentence with actions: "${rawDialogue}"\n\n${name1}:`;
+                    }
+                    generate_data.prompt = newPrompt;
+                    resolve(generate_data);
+                };
+
+                const onStopOrEnd = () => {
+                    cleanup(); // 중간에 중단되면 정리
+                    resolve(null); // 더 이상 기다리지 않음
+                };
+
+                // 2. 리스너 제거 함수 (에러 없이 안전하게 정리)
+                const cleanup = () => {
+                    eventSource.removeListener(event_types.GENERATE_AFTER_DATA, onAfterData);
+                    eventSource.removeListener(event_types.GENERATE_STOPPED, onStopOrEnd);
+                    eventSource.removeListener(event_types.GENERATE_ENDED, onStopOrEnd);
+                };
+
+                // 3. 이벤트 등록
+                eventSource.on(event_types.GENERATE_AFTER_DATA, onAfterData);
+                eventSource.on(event_types.GENERATE_STOPPED, onStopOrEnd);
+                eventSource.on(event_types.GENERATE_ENDED, onStopOrEnd);
+            });            
+
+            let result = await Generate("impersonate", {});
+            // console.log(`result:`, result);
+            sendTextToInput(result);
         },
         '/sendas': async (args, chatId, token, rawText) => {
             const rawArgs = args.filter(Boolean);

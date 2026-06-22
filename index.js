@@ -71,6 +71,10 @@ jQuery(async () => {
             description: 'Next message' 
         });
         cmdList.push({ 
+            command: 'impersonate',
+            description: 'impersonate'
+        });
+        cmdList.push({ 
             command: 'sendas', 
             description: 'sends a message as a specific character (e.g. /sendas name: text)' 
         });
@@ -187,28 +191,31 @@ jQuery(async () => {
     });    
 
 
-    //
+// 변수 선언부에 플래그 하나를 추가합니다.
     let currentTelegramMessageId = null;    // Telegram message ID that was created
-    let isSendingInitialMessage = false;   // Lock while creating the initial message
     let lastTelegramUpdateTime = 0;         // Throttle timing check
     let lastTelegramSentText = '';          // Cache to prevent duplicate sends (400 error)
+    let lastMessageSendDate = null;
+    let isSendingInitialMessage = false;    // ★ 추가: 최초 메시지 송신 중인지 체크하는 플래그
     const TELEGRAM_EDIT_THROTTLE = 2000;    // Telegram edit throttle (2 seconds)
 
-    // Called each time a token is received during streaming
-    eventSource.on(event_types.STREAM_TOKEN_RECEIVED, async () => {
+    async function sendToTelegram(message, no_edit_throttle=false) {
         const currentSettings = getSettings();
         if (!currentSettings.token || !currentSettings.chatId) return;
 
-        const message = chat[chat.length - 1];
-        if (!message || message.is_user) return;
+        if (!message) return;
 
+        const fullText = `${message.name}: ${message.mes}`;
         const now = Date.now();
-        // Convert message.message to SillyTavern standard message.mes
-        const fullText = `${message.name}: ${message.mes || '...'}`;
 
         // 1. Create initial Telegram message
-        if (!currentTelegramMessageId && !isSendingInitialMessage) {
+        if (lastMessageSendDate !== message.send_date) {
+            if (isSendingInitialMessage) return;
+            
             isSendingInitialMessage = true;
+            lastMessageSendDate = message.send_date;
+            currentTelegramMessageId = null;
+            
             try {
                 const response = await fetch(`https://api.telegram.org/bot${currentSettings.token}/sendMessage`, {
                     method: 'POST',
@@ -219,7 +226,7 @@ jQuery(async () => {
                 if (data.ok) {
                     currentTelegramMessageId = data.result.message_id;
                     lastTelegramSentText = fullText;
-                    lastTelegramUpdateTime = Date.now();
+                    lastTelegramUpdateTime = now;
                 }
             } catch (error) {
                 console.error('[Telegram Link] Failed to send initial message:', error);
@@ -230,8 +237,9 @@ jQuery(async () => {
         }
 
         // 2. After throttle time passed, update Telegram only when actual content changed (prevent 400 errors)
-        if (currentTelegramMessageId && (now - lastTelegramUpdateTime > TELEGRAM_EDIT_THROTTLE)) {
-            if (fullText === lastTelegramSentText) return; 
+        else if (currentTelegramMessageId && ((now - lastTelegramUpdateTime > TELEGRAM_EDIT_THROTTLE) || no_edit_throttle)) {
+            console.log("EDIT lastMessageSendDate:", lastMessageSendDate);
+            if (fullText === lastTelegramSentText && lastMessageSendDate === message.send_date) return; 
 
             lastTelegramUpdateTime = now;
             lastTelegramSentText = fullText;
@@ -249,53 +257,23 @@ jQuery(async () => {
                 console.error('[Telegram Link] Streaming update failed:', error);
             }
         }
-    });
+    }
 
-    // 1-2. Called when streaming is fully finished (final sentence sync)
-    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async () => {
-        const currentSettings = getSettings();
-        if (!currentSettings.token || !currentSettings.chatId) return;
-
+    // Called each time a token is received during streaming
+    eventSource.on(event_types.STREAM_TOKEN_RECEIVED, async (text) => {
         const message = chat[chat.length - 1];
-        if (!message || message.is_user) return;
-
-        const fullText = `${message.name}: ${message.mes}`;
-
-        let attempts = 0;
-        while (!currentTelegramMessageId && isSendingInitialMessage && attempts < 30) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            attempts++;
-        }
-
-        try {
-            if (currentTelegramMessageId) {
-                // Update Telegram only when the final content differs to prevent 400 errors
-                if (fullText !== lastTelegramSentText) {
-                    await fetch(`https://api.telegram.org/bot${currentSettings.token}/editMessageText`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            chat_id: currentSettings.chatId,
-                            message_id: currentTelegramMessageId,
-                            text: fullText
-                        })
-                    });
-                }
-            } else {
-                await fetch(`https://api.telegram.org/bot${currentSettings.token}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chat_id: currentSettings.chatId, text: fullText })
-                });
-            }
-        } catch (error) {
-            console.error('[Telegram Link] Final message sync failed:', error);
-        } finally {
-            currentTelegramMessageId = null;
-            isSendingInitialMessage = false;
-            lastTelegramSentText = '';
-        }
+        sendToTelegram(message);
     });
+    // 1-2. Called when streaming is fully finished (final sentence sync)
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async (messageId, type) => {
+        const message = chat[chat.length - 1];
+        sendToTelegram(message, true);
+    });
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, async (messageId) => {
+        const message = chat[chat.length - 1];
+        sendToTelegram(message, true);
+    });
+
 
     // 2. Detect Telegram messages in real time and input them into SillyTavern (Inbound - Long Polling)
     let lastUpdateId = null;
@@ -327,7 +305,7 @@ jQuery(async () => {
             if (data.ok && data.result) {
                 for (const update of data.result) {
                     lastUpdateId = update.update_id;
-                    const message = update.message;
+                    const message = update.message || update.edited_message
                     const callbackQuery = update.callback_query;
 
                     if (message && message.chat && String(message.chat.id) === String(currentSettings.chatId) && message.text) {
